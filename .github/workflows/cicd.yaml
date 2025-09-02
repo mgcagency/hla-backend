@@ -1,0 +1,65 @@
+name: HLA
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on:
+      ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+      - name: Login to Docker Hub
+        run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+      - name: Buil Docker Image
+        run: docker build --no-cache -t karma1325/hla-test .
+      - name: Publish image on docker hub
+        run: docker push karma1325/hla-test:latest
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: set up SSH
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.DO_SSH_KEY }}
+      
+      - name: SSH into EC2 and run certbot
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          username: root
+          host: ${{ secrets.DO_IP }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          script: |
+            sudo apt-get install -y certbot
+            sudo certbot certonly --standalone --non-interactive --agree-tos --email fleacttech@gmail.com -d ardleanursery.co.uk
+            CERT_PATH="/etc/letsencrypt/live/ardleanursery.co.uk-0001/fullchain.pem"
+            KEY_PATH="/etc/letsencrypt/live/ardleanursery.co.uk-0001/privkey.pem"
+            docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+            docker pull karma1325/hla-test:latest
+            docker rm -f hla-container
+            docker run -d -p 80:80 -p 443:443 --name hla-container -v $CERT_PATH:/etc/letsencrypt/live/ardleanursery.co.uk-0001/fullchain.pem -v $KEY_PATH:/etc/letsencrypt/live/ardleanursery.co.uk-0001/privkey.pem  -e MONGO_URI='${{secrets.MONGO_URI}}' karma1325/hla-test
+
+  renew_SSL:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: set up SSH
+        uses: webfactory/ssh-agent@v0.7.0
+        with: 
+          ssh-private-key: ${{ secrets.DO_SSH_key }}
+
+      - name: SSH into EC2 and renew SSL
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DO_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          script: |
+            sudo certbot renew --non-interactive
+            docker restart hla-container
+    
